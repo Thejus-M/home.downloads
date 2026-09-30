@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "home.downloads",
+  "name": "Downloads",
+  "version": "0.1.0",
+  "author": "iam033720+claude@gmail.com",
+  "license": "MIT",
+  "description": "Live Telegram Desktop download progress (bytes so far + speed) in the bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "Panel.qml" },
+  "barWidget": {
+    "displayName": "Downloads",
+    "description": "Active Telegram downloads: file, bytes so far, speed.",
+    "category": "Utility",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
