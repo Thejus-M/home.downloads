@@ -181,7 +181,7 @@ Panel {
     bar: root.bar
     open: root.opened
     contentWidth: panel.fittedContentWidth(Style.space(360))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(420))
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(480))
 
     Flickable {
       id: flick
@@ -320,9 +320,13 @@ Panel {
         height: Math.max(percentText.implicitHeight, dot.height)
         anchors.verticalCenter: parent.verticalCenter
 
+        // Percent and dot share this same centered spot and cross-fade
+        // between each other (rather than snapping via `visible`) for when
+        // a file's total size arrives mid-download. The pulse animation
+        // lives on the dot's own opacity, one level in, so it doesn't fight
+        // the crossfade's Behavior for control of the same property.
         Text {
           id: percentText
-          visible: downloadRow.hasPercent
           anchors.centerIn: parent
           textFormat: Text.PlainText
           text: downloadRow.hasPercent ? (downloadRow.download.percent + "%") : ""
@@ -330,22 +334,30 @@ Panel {
           font.family: Style.font.family
           font.pixelSize: Style.font.displayLarge
           font.bold: true
+          opacity: downloadRow.hasPercent ? 1 : 0
+          Behavior on opacity { NumberAnimation { duration: 200 } }
         }
 
-        Rectangle {
-          id: dot
-          visible: !downloadRow.hasPercent
+        Item {
+          id: dotFade
+          anchors.centerIn: parent
           width: Style.space(8)
           height: width
-          radius: width / 2
-          color: Color.accent
-          anchors.centerIn: parent
+          opacity: downloadRow.hasPercent ? 0 : 1
+          Behavior on opacity { NumberAnimation { duration: 200 } }
 
-          SequentialAnimation on opacity {
-            running: dot.visible
-            loops: Animation.Infinite
-            NumberAnimation { from: 1.0; to: 0.3; duration: 700 }
-            NumberAnimation { from: 0.3; to: 1.0; duration: 700 }
+          Rectangle {
+            id: dot
+            anchors.fill: parent
+            radius: width / 2
+            color: Color.accent
+
+            SequentialAnimation on opacity {
+              running: !downloadRow.hasPercent
+              loops: Animation.Infinite
+              NumberAnimation { from: 1.0; to: 0.3; duration: 700 }
+              NumberAnimation { from: 0.3; to: 1.0; duration: 700 }
+            }
           }
         }
       }
@@ -364,6 +376,30 @@ Panel {
           font.pixelSize: Style.font.subtitle
           font.bold: true
           elide: Text.ElideRight
+        }
+
+        // Height stays reserved either way so a file's total arriving
+        // mid-download (dis/appearing fill) never shifts the row's height -
+        // only its own opacity/width animate.
+        Item {
+          width: parent.width
+          height: Style.space(3)
+          opacity: downloadRow.hasPercent ? 1 : 0
+          Behavior on opacity { NumberAnimation { duration: 200 } }
+
+          Rectangle {
+            anchors.fill: parent
+            radius: height / 2
+            color: Qt.darker(downloadRow.foreground, 3.0)
+          }
+
+          Rectangle {
+            height: parent.height
+            radius: height / 2
+            color: Color.accent
+            width: downloadRow.hasPercent ? parent.width * (downloadRow.download.percent / 100) : 0
+            Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
+          }
         }
 
         Text {
@@ -408,8 +444,24 @@ Panel {
 
     implicitHeight: finishedContent.implicitHeight + Style.spacing.rowPaddingX
     radius: Style.cornerRadius
-    color: "transparent"
+    // Tinted with doneColor rather than Color.accent on hover, so a finished
+    // row reads as distinctly "done" even before its checkmark registers.
+    color: finishedMouse.containsMouse ? Style.controlFill(false, true, finishedRow.foreground, finishedRow.doneColor) : "transparent"
     borderSpec: Border.none()
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    MouseArea {
+      id: finishedMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!finishedRow.download) return
+        var dir = finishedRow.download.path.substring(0, finishedRow.download.path.lastIndexOf("/"))
+        Quickshell.execDetached(["xdg-open", dir])
+      }
+    }
 
     Row {
       id: finishedContent
