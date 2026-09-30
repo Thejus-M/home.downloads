@@ -48,9 +48,35 @@ function mergeSnapshot(previous, current, nowMs, sizeCache) {
       path: row.path, name: row.name, size: row.size, bytesPerSec: bytesPerSec,
       totalSize: totalSize, percent: percent
     })
-    nextSnapshot[row.path] = { size: row.size, ts: nowMs }
+    nextSnapshot[row.path] = { size: row.size, ts: nowMs, name: row.name }
   }
   return { rows: rows, snapshot: nextSnapshot }
+}
+
+// Sum of every row's current speed - the "combined" figure for the panel
+// header. 0 (not an empty string) when there's nothing to add, so callers
+// can cheaply check `> 0` before formatting.
+function totalSpeed(rows) {
+  var sum = 0
+  for (var i = 0; i < (rows || []).length; i++) sum += rows[i].bytesPerSec || 0
+  return sum
+}
+
+// Paths present in the previous poll's snapshot ({ [path]: { size, ts, name
+// } }) but missing from the fresh scan_downloads.py result: downloads that
+// just disappeared, either finished or cancelled (this data source can't
+// tell those apart - see scan_downloads.py's header). Returns
+// { path, name, size } per vanished entry, using its last-known size.
+function diffFinished(previousSnapshot, current) {
+  var stillPresent = {}
+  for (var i = 0; i < (current || []).length; i++) stillPresent[current[i].path] = true
+  var finished = []
+  for (var path in previousSnapshot) {
+    if (!stillPresent[path]) {
+      finished.push({ path: path, name: previousSnapshot[path].name, size: previousSnapshot[path].size })
+    }
+  }
+  return finished
 }
 
 // Raw shape written by lookup_sizes.py's cache file: { [name]: { size,

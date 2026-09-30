@@ -27,12 +27,16 @@ Panel {
   readonly property string scriptPath: "/home/pc/.config/omarchy/plugins/home.downloads/bin/scan_downloads.py"
   readonly property string lookupScriptPath: "/home/pc/.config/omarchy/plugins/home.downloads/bin/lookup_sizes.py"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
+  readonly property color doneColor: "#3ea34d"
   property var downloads: []
+  property var finished: []
   property bool telegramRunning: true
+  property bool hasLoadedOnce: false
   property var snapshot: ({})
   property var sizeCache: ({})
   property real lastLookupAttempt: 0
   property string lookupStatus: ""
+  readonly property real combinedSpeedBps: Model.totalSpeed(root.downloads)
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -71,9 +75,33 @@ Panel {
         try {
           var parsed = JSON.parse(raw)
           root.telegramRunning = !!parsed.telegramRunning
+
+          // Only treat a vanished path as "finished" while Telegram is
+          // confirmed still running - if Telegram itself quit, every path
+          // vanishes at once and that's not a completion, just the app closing.
+          if (root.telegramRunning) {
+            var justFinished = Model.diffFinished(root.snapshot, parsed.downloads || [])
+            if (justFinished.length > 0) {
+              var now = Date.now()
+              var updatedFinished = root.finished.slice()
+              for (var i = 0; i < justFinished.length; i++) {
+                updatedFinished.push({
+                  path: justFinished[i].path, name: justFinished[i].name,
+                  size: justFinished[i].size, finishedAt: now
+                })
+                Quickshell.execDetached([
+                  "omarchy-notification-send", "--app-name", "Downloads", "-g", "󰇚",
+                  justFinished[i].name, "Finished downloading"
+                ])
+              }
+              root.finished = updatedFinished
+            }
+          }
+
           var merged = Model.mergeSnapshot(root.snapshot, parsed.downloads || [], Date.now(), root.sizeCache)
           root.downloads = merged.rows
           root.snapshot = merged.snapshot
+          root.hasLoadedOnce = true
           root.maybeLookupSizes()
         } catch (e) { /* leave last-known state on a bad tick */ }
       }
@@ -116,6 +144,19 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.refresh()
+  }
+
+  // Prunes "just finished" rows ~4s after they complete (see scanProc above)
+  // so a fast download doesn't just flicker away unnoticed.
+  Timer {
+    interval: 1000
+    running: true
+    repeat: true
+    onTriggered: {
+      var now = Date.now()
+      var kept = root.finished.filter(function (f) { return now - f.finishedAt < 4000 })
+      if (kept.length !== root.finished.length) root.finished = kept
+    }
   }
 
   BarIconButton {
@@ -161,13 +202,26 @@ Panel {
         PanelHero {
           width: parent.width
           title: "Downloads"
-          meta: root.downloads.length + " active"
+          meta: root.downloads.length + " active" + (root.combinedSpeedBps > 0
+            ? ("  ·  " + Model.formatSpeed(root.combinedSpeedBps) + " combined")
+            : "")
           foreground: root.foreground
         }
 
         Column {
           width: parent.width
           spacing: Style.space(6)
+
+          Repeater {
+            model: root.finished
+            delegate: FinishedRow {
+              required property var modelData
+              width: parent.width
+              download: modelData
+              foreground: root.foreground
+              doneColor: root.doneColor
+            }
+          }
 
           Repeater {
             model: root.downloads
@@ -180,7 +234,18 @@ Panel {
           }
 
           Text {
-            visible: root.downloads.length === 0
+            visible: !root.hasLoadedOnce
+            width: parent.width
+            textFormat: Text.PlainText
+            text: "Checking Telegram…"
+            color: Qt.darker(root.foreground, 1.5)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          Text {
+            visible: root.hasLoadedOnce && root.downloads.length === 0 && root.finished.length === 0
             width: parent.width
             textFormat: Text.PlainText
             text: root.telegramRunning ? "No active downloads." : "Telegram isn't running."
@@ -214,7 +279,7 @@ Panel {
 
   // One in-progress download: a big percentage (once lookup_sizes.py has
   // found the total) or a pulsing dot in its place, plus filename and a
-  // bytes-so-far/total/speed/ETA line.
+  // bytes-so-far/total/speed/ETA line. Click reveals the file's folder.
   component DownloadRow: BorderSurface {
     id: downloadRow
     property var download: null
@@ -223,8 +288,22 @@ Panel {
 
     implicitHeight: content.implicitHeight + Style.spacing.rowPaddingX
     radius: Style.cornerRadius
-    color: "transparent"
+    color: mouse.containsMouse ? Style.controlFill(false, true, downloadRow.foreground, Color.accent) : "transparent"
     borderSpec: Border.none()
+
+    Behavior on color { ColorAnimation { duration: 100 } }
+
+    MouseArea {
+      id: mouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        if (!downloadRow.download) return
+        var dir = downloadRow.download.path.substring(0, downloadRow.download.path.lastIndexOf("/"))
+        Quickshell.execDetached(["xdg-open", dir])
+      }
+    }
 
     Row {
       id: content
@@ -309,6 +388,76 @@ Panel {
           width: parent.width
           text: eta + " left"
           color: Qt.darker(downloadRow.foreground, 1.5)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
+  // A download that just completed: shown for ~4s (see the prune Timer
+  // above) instead of vanishing the instant its fd closes, so a fast
+  // download doesn't flicker away unnoticed. Same layout as DownloadRow's
+  // stat/name/detail columns, swapping the percent/dot for a checkmark and
+  // the speed/ETA line for a plain final size.
+  component FinishedRow: BorderSurface {
+    id: finishedRow
+    property var download: null
+    property color foreground: Color.foreground
+    property color doneColor: "#3ea34d"
+
+    implicitHeight: finishedContent.implicitHeight + Style.spacing.rowPaddingX
+    radius: Style.cornerRadius
+    color: "transparent"
+    borderSpec: Border.none()
+
+    Row {
+      id: finishedContent
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.rowPaddingX
+      anchors.rightMargin: Style.spacing.rowPaddingX
+      spacing: Style.spacing.sm
+
+      Item {
+        id: finishedStat
+        width: Style.space(56)
+        height: checkText.implicitHeight
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          id: checkText
+          anchors.centerIn: parent
+          textFormat: Text.PlainText
+          text: "✓"
+          color: finishedRow.doneColor
+          font.pixelSize: Style.font.displayLarge
+          font.bold: true
+        }
+      }
+
+      Column {
+        width: parent.width - finishedStat.width - parent.spacing
+        spacing: Style.spacing.xs
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          text: finishedRow.download ? finishedRow.download.name : ""
+          color: finishedRow.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          text: finishedRow.download ? ("Finished · " + Model.formatBytes(finishedRow.download.size)) : ""
+          color: finishedRow.doneColor
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
         }
